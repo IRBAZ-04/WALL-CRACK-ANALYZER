@@ -1,0 +1,8 @@
+image_id,location,has_crack,crack_type,lighting_condition,indoor_outdoor,distance,notes
+CAMPUS_ACADEMIC_001,Academic Block A,YES,deep_wide,daylight,outdoor,1.5m,Representative campus wall dataset sample with 10cm reference marker
+CAMPUS_HOSTEL_002,Hostel Block B,YES,hairline,shadow_uneven,outdoor,2.0m,Representative campus wall dataset sample with 10cm reference marker
+CAMPUS_STAIR_003,Main Staircase Wall,YES,vertical,low_light_evening,indoor,1.2m,Representative campus wall dataset sample with 10cm reference marker
+CAMPUS_PARKING_004,Basement Parking Pillar,YES,horizontal,noon_sunlight,indoor,1.8m,Representative campus wall dataset sample with 10cm reference marker
+CAMPUS_CORRIDOR_005,Science Wing Corridor,YES,diagonal,daylight,indoor,1.0m,Representative campus wall dataset sample with 10cm reference marker
+CAMPUS_COMPOUND_006,Outer Boundary Wall,YES,multiple,shadow_uneven,outdoor,2.5m,Representative campus wall dataset sample with 10cm reference marker
+CAMPUS_CLEAN_007,Library Reading Room,NO,no_crack,daylight,indoor,1.5m,Representative campus wall dataset sample with 10cm reference marker

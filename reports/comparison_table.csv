@@ -1,0 +1,6 @@
+algorithm,precision,recall,f1_score,accuracy,processing_time_sec
+canny,0.138,0.7635,0.1494,0.3016,0.0039
+fusion,0.1193,0.7877,0.1394,0.2995,0.0098
+laplacian,0.0067,0.8703,0.0132,0.0668,0.0092
+prewitt,0.1831,0.808,0.2051,0.3005,0.0074
+sobel,0.1837,0.7988,0.2052,0.2918,0.0138
