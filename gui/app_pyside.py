@@ -254,6 +254,140 @@ class LiveCameraDialog(QDialog):
         super().closeEvent(event)
 
 
+# ---------------- INTERACTIVE MAGNIFYING LOUPE VIEWER WIDGET ----------------
+class MagnifyingLoupeViewer(QLabel):
+    def __init__(self, placeholder_text="Upload or capture a wall image to start", parent=None):
+        super().__init__(parent)
+        self.setMouseTracking(True)
+        self.placeholder_text = placeholder_text
+        self.bgr_image = None
+        self.scaled_pixmap = None
+        self.loupe_enabled = True
+        self.mouse_pos = QPoint(-1000, -1000)
+        self.loupe_radius = 80
+        self.zoom_factor = 2.5
+        self.is_hovering = False
+
+        self.setAlignment(Qt.AlignCenter)
+        self.setText(placeholder_text)
+        self.setStyleSheet("color: #8b949e; background-color: #0d1117; border-radius: 6px;")
+
+    def set_bgr_image(self, bgr_img):
+        self.bgr_image = bgr_img
+        self.setText("")
+        self._update_scaled_pixmap()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_scaled_pixmap()
+
+    def _update_scaled_pixmap(self):
+        if self.bgr_image is None:
+            return
+        h, w, ch = self.bgr_image.shape
+        rgb = cv2.cvtColor(self.bgr_image, cv2.COLOR_BGR2RGB)
+        qimg = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
+        pix = QPixmap.fromImage(qimg)
+        self.scaled_pixmap = pix.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.setPixmap(self.scaled_pixmap)
+
+    def enterEvent(self, event):
+        self.is_hovering = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.is_hovering = False
+        self.update()
+        super().leaveEvent(event)
+
+    def mouseMoveEvent(self, event):
+        self.mouse_pos = event.position().toPoint()
+        self.update()
+        super().mouseMoveEvent(event)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self.loupe_enabled or not self.is_hovering or self.bgr_image is None or self.scaled_pixmap is None:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        pw, ph = self.scaled_pixmap.width(), self.scaled_pixmap.height()
+        lw, lh = self.width(), self.height()
+        ox = (lw - pw) // 2
+        oy = (lh - ph) // 2
+
+        mx = self.mouse_pos.x()
+        my = self.mouse_pos.y()
+
+        if not (ox <= mx <= ox + pw and oy <= my <= oy + ph):
+            return
+
+        oh, ow = self.bgr_image.shape[:2]
+        img_x = int((mx - ox) * (ow / max(pw, 1)))
+        img_y = int((my - oy) * (oh / max(ph, 1)))
+
+        rw = int(self.loupe_radius * 2 / self.zoom_factor * (ow / max(pw, 1)))
+        rh = int(self.loupe_radius * 2 / self.zoom_factor * (oh / max(ph, 1)))
+
+        x1 = max(0, img_x - rw // 2)
+        y1 = max(0, img_y - rh // 2)
+        x2 = min(ow, x1 + rw)
+        y2 = min(oh, y1 + rh)
+
+        roi = self.bgr_image[y1:y2, x1:x2]
+        if roi.size == 0:
+            return
+
+        roi_rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
+        rh_r, rw_r, _ = roi_rgb.shape
+        q_roi = QImage(roi_rgb.data, rw_r, rh_r, rw_r * 3, QImage.Format_RGB888)
+        pix_roi = QPixmap.fromImage(q_roi).scaled(
+            self.loupe_radius * 2, self.loupe_radius * 2, Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+
+        path = QPainterPath()
+        path.addEllipse(QRectF(
+            mx - self.loupe_radius,
+            my - self.loupe_radius,
+            self.loupe_radius * 2,
+            self.loupe_radius * 2
+        ))
+
+        painter.save()
+        painter.setClipPath(path)
+        painter.drawPixmap(
+            int(mx - self.loupe_radius),
+            int(my - self.loupe_radius),
+            pix_roi
+        )
+
+        pen_reticle = QPen(QColor(56, 189, 248, 200), 1, Qt.DashLine)
+        painter.setPen(pen_reticle)
+        painter.drawLine(mx - 15, my, mx + 15, my)
+        painter.drawLine(mx, my - 15, mx, my + 15)
+        painter.restore()
+
+        pen_ring = QPen(QColor(56, 189, 248), 3)
+        painter.setPen(pen_ring)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawEllipse(QRectF(
+            mx - self.loupe_radius,
+            my - self.loupe_radius,
+            self.loupe_radius * 2,
+            self.loupe_radius * 2
+        ))
+
+        painter.setPen(QPen(QColor(255, 255, 255)))
+        painter.setBrush(QBrush(QColor(13, 17, 23, 220)))
+        badge = QRectF(mx - 45, my + self.loupe_radius + 6, 90, 20)
+        painter.drawRoundedRect(badge, 4, 4)
+        painter.setFont(QFont("Consolas", 8, QFont.Bold))
+        painter.drawText(badge, Qt.AlignCenter, f"{self.zoom_factor:.1f}x LOUPE")
+
+
 # ---------------- INTERACTIVE GROUND TRUTH ANNOTATION WIDGET ----------------
 class GroundTruthPainter(QWidget):
     def __init__(self, parent=None):
@@ -530,9 +664,7 @@ class WallCrackMainWindow(QMainWindow):
         preview_card = QFrame()
         preview_card.setProperty("class", "Card")
         pv_layout = QVBoxLayout(preview_card)
-        self.lbl_home_preview = QLabel("Upload or capture a campus wall image to start")
-        self.lbl_home_preview.setAlignment(Qt.AlignCenter)
-        self.lbl_home_preview.setStyleSheet("color: #8b949e; background-color: #0d1117; border-radius: 6px;")
+        self.lbl_home_preview = MagnifyingLoupeViewer("Upload or capture a campus wall image to start")
         pv_layout.addWidget(self.lbl_home_preview)
 
         content_split.addWidget(preview_card, 2)
@@ -634,9 +766,7 @@ class WallCrackMainWindow(QMainWindow):
         # Annotated Image & Detail Breakdown
         hud_body = QHBoxLayout()
 
-        self.lbl_hud_annotated = QLabel("Run Pipeline to view annotated overlay")
-        self.lbl_hud_annotated.setAlignment(Qt.AlignCenter)
-        self.lbl_hud_annotated.setStyleSheet("background-color: #161b22; border-radius: 8px;")
+        self.lbl_hud_annotated = MagnifyingLoupeViewer("Run Pipeline to view annotated overlay")
         hud_body.addWidget(self.lbl_hud_annotated, 2)
 
         detail_card = QFrame()
@@ -978,13 +1108,16 @@ class WallCrackMainWindow(QMainWindow):
         QMessageBox.information(self, "Saved", f"Ground truth mask saved to {save_path}")
 
     def _display_image_on_label(self, bgr_image, label):
-        h, w, ch = bgr_image.shape
-        rgb = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2RGB)
-        qimg = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
-        pix = QPixmap.fromImage(qimg).scaled(
-            label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
-        )
-        label.setPixmap(pix)
+        if isinstance(label, MagnifyingLoupeViewer):
+            label.set_bgr_image(bgr_image)
+        else:
+            h, w, ch = bgr_image.shape
+            rgb = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2RGB)
+            qimg = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
+            pix = QPixmap.fromImage(qimg).scaled(
+                label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+            label.setPixmap(pix)
 
 
 if __name__ == "__main__":

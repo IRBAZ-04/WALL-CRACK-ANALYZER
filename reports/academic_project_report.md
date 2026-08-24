@@ -248,6 +248,7 @@ Experimental performance results on campus dataset:
 ### CHAPTER 24: PYSIDE6 DESKTOP GUI DESIGN
 The PySide6 interface provides:
 * Nordic Dark Glassmorphic QSS visual styling.
+* **Interactive Magnifying Glass Loupe Lens (Hover Inspection Tool)**: As mouse cursor moves over the image, a circular $2.5\times$ magnified lens pops up with cyan reticle crosshairs for pixel-level edge inspection.
 * 2-Up Side-by-Side Split Image Comparison slider with synchronous dragging.
 * Live webcam frame acquisition dialog.
 * HUD dashboard card metrics.
