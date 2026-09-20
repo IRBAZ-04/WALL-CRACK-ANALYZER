@@ -749,13 +749,15 @@ class WallCrackMainWindow(QMainWindow):
         # KPI Dashboard Cards Row
         kpi_row = QHBoxLayout()
 
-        self.kpi_crack_status = self._create_kpi_card("CRACK DETECTED", "NO", "#ef4444")
-        self.kpi_confidence = self._create_kpi_card("CONFIDENCE", "--", "#38bdf8")
+        self.kpi_crack_status = self._create_kpi_card("AI CLASSIFICATION", "PENDING", "#38bdf8")
+        self.kpi_ai_conf = self._create_kpi_card("AI CONFIDENCE", "--", "#a855f7")
+        self.kpi_confidence = self._create_kpi_card("CLASSICAL CONF", "--", "#38bdf8")
         self.kpi_length = self._create_kpi_card("ESTIMATED LENGTH", "--", "#22c55e")
         self.kpi_width = self._create_kpi_card("AVG WIDTH", "--", "#38bdf8")
         self.kpi_damage = self._create_kpi_card("DAMAGE WALL %", "--", "#f59e0b")
 
         kpi_row.addWidget(self.kpi_crack_status)
+        kpi_row.addWidget(self.kpi_ai_conf)
         kpi_row.addWidget(self.kpi_confidence)
         kpi_row.addWidget(self.kpi_length)
         kpi_row.addWidget(self.kpi_width)
@@ -988,11 +990,22 @@ class WallCrackMainWindow(QMainWindow):
         self.image_path = path
         self.image_id = os.path.splitext(os.path.basename(path))[0]
         self.image_bgr = cv2.imread(path)
+        if self.image_bgr is None:
+            QMessageBox.warning(self, "Invalid Image", f"Could not read or decode image file:\n{path}")
+            return
 
         # Show preview
         self._display_image_on_label(self.image_bgr, self.lbl_home_preview)
-        self.lbl_sb_status.setText(f"Loaded: {os.path.basename(path)}")
         self.painter_widget.set_base_image(self.image_bgr)
+
+        # Fast AI screening on load
+        try:
+            from ai import get_classifier
+            clf = get_classifier()
+            ai_res = clf.predict(self.image_bgr)
+            self.lbl_sb_status.setText(f"Loaded: {os.path.basename(path)} | AI Screen: {ai_res['status']} ({ai_res['confidence']}%)")
+        except Exception:
+            self.lbl_sb_status.setText(f"Loaded: {os.path.basename(path)}")
 
     def _open_webcam(self):
         dialog = LiveCameraDialog(self)
@@ -1004,8 +1017,16 @@ class WallCrackMainWindow(QMainWindow):
             cv2.imwrite(self.image_path, self.image_bgr)
 
             self._display_image_on_label(self.image_bgr, self.lbl_home_preview)
-            self.lbl_sb_status.setText("Live webcam frame captured!")
             self.painter_widget.set_base_image(self.image_bgr)
+
+            # Fast AI screening on capture
+            try:
+                from ai import get_classifier
+                clf = get_classifier()
+                ai_res = clf.predict(self.image_bgr)
+                self.lbl_sb_status.setText(f"Live webcam frame captured! | AI Screen: {ai_res['status']} ({ai_res['confidence']}%)")
+            except Exception:
+                self.lbl_sb_status.setText("Live webcam frame captured!")
 
     def _set_algo(self, algo_name):
         self.current_algo = algo_name
@@ -1015,19 +1036,36 @@ class WallCrackMainWindow(QMainWindow):
             QMessageBox.warning(self, "No Image", "Please upload or capture a wall image first!")
             return
 
-        self.lbl_sb_status.setText("Running processing pipeline...")
+        self.lbl_sb_status.setText("Running MobileNetV2 screening & analysis pipeline...")
         QApplication.processEvents()
 
         try:
             ref_cm = self.spin_calib_cm.value()
             final_img, measurements = pipeline.run_pipeline(
-                self.image_path, chosen_algo=self.current_algo, reference_cm=ref_cm
+                self.image_path, chosen_algo=self.current_algo, reference_cm=ref_cm, run_ai=True
             )
             self.measurements = measurements
-            self.lbl_sb_status.setText("Pipeline completed successfully!")
 
             # Update Measurements HUD
             self._update_measurements_hud(final_img, measurements)
+
+            # Check if AI screened as NORMAL
+            if not measurements.get("crack_detected", True):
+                ai_info = measurements.get("ai", {})
+                self.lbl_sb_status.setText(f"AI: NO CRACK DETECTED ({ai_info.get('confidence', 0)}%) — Pipeline Bypassed")
+                QMessageBox.information(
+                    self,
+                    "No Crack Detected",
+                    f"AI MobileNetV2 Screening Result:\n\n"
+                    f"Status: NO CRACK DETECTED\n"
+                    f"AI Confidence: {ai_info.get('confidence', 0)}%\n"
+                    f"Raw Score: {ai_info.get('raw_score', 0.0)}\n\n"
+                    f"The wall is classified as sound/normal.\n"
+                    f"Detailed crack-analysis pipeline was bypassed to conserve computation."
+                )
+                return
+
+            self.lbl_sb_status.setText("Pipeline completed successfully!")
 
             # Update Split Viewer
             if os.path.exists(self.image_path):
@@ -1037,7 +1075,9 @@ class WallCrackMainWindow(QMainWindow):
             # Reload evaluation metrics table
             self._reload_evaluation()
 
-            QMessageBox.information(self, "Analysis Done", "Pipeline processing finished! Check Measurements HUD and Processing Stages.")
+            ai_info = measurements.get("ai", {})
+            ai_text = f" [AI: {ai_info.get('status')} ({ai_info.get('confidence')}%)]" if ai_info else ""
+            QMessageBox.information(self, "Analysis Done", f"Pipeline processing finished!{ai_text}\nCheck Measurements HUD and Processing Stages.")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Pipeline failure: {str(e)}")
             self.lbl_sb_status.setText("Pipeline error!")
@@ -1045,9 +1085,18 @@ class WallCrackMainWindow(QMainWindow):
     def _update_measurements_hud(self, final_img, m):
         self._display_image_on_label(final_img, self.lbl_hud_annotated)
 
-        crack_found = m["area"]["crack_area_px"] > 0
-        self.kpi_crack_status.value_label.setText("YES" if crack_found else "NO")
-        self.kpi_crack_status.value_label.setStyleSheet("color: #22c55e;" if crack_found else "color: #ef4444;")
+        crack_found = m.get("crack_detected", m["area"]["crack_area_px"] > 0)
+        ai_info = m.get("ai")
+
+        # Update KPI Cards
+        if ai_info and ai_info.get("model_loaded"):
+            self.kpi_crack_status.value_label.setText(ai_info["status"])
+            self.kpi_crack_status.value_label.setStyleSheet("color: #ef4444;" if ai_info["is_crack"] else "color: #22c55e;")
+            self.kpi_ai_conf.value_label.setText(f"{ai_info['confidence']}%")
+        else:
+            self.kpi_crack_status.value_label.setText("CRACK DETECTED" if crack_found else "NO CRACK DETECTED")
+            self.kpi_crack_status.value_label.setStyleSheet("color: #ef4444;" if crack_found else "color: #22c55e;")
+            self.kpi_ai_conf.value_label.setText("N/A")
 
         self.kpi_confidence.value_label.setText(f"{m['confidence']}%")
         self.kpi_length.value_label.setText(
@@ -1059,8 +1108,22 @@ class WallCrackMainWindow(QMainWindow):
         self.kpi_damage.value_label.setText(f"{m['area']['damage_percentage']}%")
 
         w_m = m["width"]
+        ai_section = ""
+        if ai_info:
+            ai_section = (
+                f"--- AI SCREENING (MobileNetV2) ---\n"
+                f"Status            : {ai_info.get('status', 'N/A')}\n"
+                f"AI Confidence     : {ai_info.get('confidence', 0.0)}%\n"
+                f"Raw Sigmoid Score : {ai_info.get('raw_score', 0.0)}\n"
+                f"Threshold         : 0.50\n"
+                f"Model Loaded      : {'YES' if ai_info.get('model_loaded') else 'NO'}\n\n"
+            )
+
         details_text = (
+            f"{ai_section}"
+            f"--- CLASSICAL IMAGE PROCESSING ---\n"
             f"Algorithm Selected: {self.current_algo.upper()}\n"
+            f"Classical Conf    : {m['confidence']}%\n"
             f"Lighting Detected : {m['lighting_detected']}\n"
             f"Segmentation Used : {m['segmentation_method']}\n"
             f"Calibrated (Marker): {'YES' if m['calibrated'] else 'NO (px only)'}\n\n"
@@ -1071,6 +1134,7 @@ class WallCrackMainWindow(QMainWindow):
             f"Damage Percentage : {m['area']['damage_percentage']}%"
         )
         self.txt_hud_details.setText(details_text)
+
 
     def _reload_evaluation(self):
         summary = comparison.run_evaluation()

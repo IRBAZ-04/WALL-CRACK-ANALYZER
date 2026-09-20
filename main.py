@@ -21,6 +21,7 @@ import numpy as np
 
 from algorithms import preprocessing, sobel, prewitt, laplacian, canny, fusion, segmentation, morphology
 from measurement import calibration, length, width, area
+from ai import get_classifier
 
 OUTPUT_DIR = "outputs"
 
@@ -60,6 +61,21 @@ def generate_width_heatmap(original_bgr, binary_mask):
     return blended
 
 
+def annotate_normal(original_bgr, ai_res):
+    """Draws a clean status badge when AI classifies wall as normal (sound)."""
+    annotated = original_bgr.copy()
+    h, w = annotated.shape[:2]
+    banner = annotated.copy()
+    cv2.rectangle(banner, (10, 10), (min(w - 10, 500), 80), (20, 20, 20), -1)
+    cv2.rectangle(banner, (10, 10), (min(w - 10, 500), 80), (34, 197, 94), 2)
+    blended = cv2.addWeighted(annotated, 0.4, banner, 0.6, 0)
+
+    cv2.putText(blended, "AI: NO CRACK DETECTED", (22, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (34, 197, 94), 2, cv2.LINE_AA)
+    conf = ai_res.get("confidence", 0.0) if ai_res else 0.0
+    cv2.putText(blended, f"Confidence: {conf}% | Sound Wall (Pipeline Bypassed)", (22, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 220, 220), 1, cv2.LINE_AA)
+    return blended
+
+
 def annotate_final(original_bgr, binary_mask, measurements, algo_name):
     overlay = original_bgr.copy()
     overlay[binary_mask > 0] = [0, 0, 255]  # red highlight
@@ -69,7 +85,12 @@ def annotate_final(original_bgr, binary_mask, measurements, algo_name):
     cv2.drawContours(blended, contours, -1, (0, 255, 255), 1)
 
     w_m = measurements["width"]
-    lines = [
+    lines = []
+    if measurements.get("ai") and measurements["ai"].get("model_loaded"):
+        ai_res = measurements["ai"]
+        lines.append(f"AI: {ai_res['status']} ({ai_res['confidence']}%)")
+
+    lines.extend([
         f"Algorithm: {algo_name.upper()}",
         f"Length: {measurements['length']['length_px']} px"
         + (f" ({measurements['length']['length_cm']} cm)" if measurements['length']['length_cm'] else ""),
@@ -78,8 +99,8 @@ def annotate_final(original_bgr, binary_mask, measurements, algo_name):
         f"Orientation: {w_m['orientation_type']}",
         f"Severity: {w_m['severity_level']}",
         f"Damage: {measurements['area']['damage_percentage']}%",
-        f"Confidence: {measurements['confidence']}%",
-    ]
+        f"Classical Conf: {measurements['confidence']}%",
+    ])
     y0 = 25
     for i, line in enumerate(lines):
         y = y0 + i * 20
@@ -89,12 +110,70 @@ def annotate_final(original_bgr, binary_mask, measurements, algo_name):
     return blended
 
 
-def run_pipeline(image_path, chosen_algo="canny", reference_cm=10.0, save_outputs=True):
+def run_pipeline(image_path, chosen_algo="canny", reference_cm=10.0, save_outputs=True, run_ai=True, skip_if_normal=True):
     image_id = os.path.splitext(os.path.basename(image_path))[0]
     image_bgr = cv2.imread(image_path)
     if image_bgr is None:
         raise FileNotFoundError(f"Could not read image: {image_path}")
 
+    # Stage 0: AI MobileNetV2 Screening
+    ai_res = None
+    if run_ai:
+        try:
+            clf = get_classifier()
+            ai_res = clf.predict(image_bgr)
+        except Exception as exc:
+            ai_res = {
+                "status": "AI_ERROR",
+                "label": "ERROR",
+                "is_crack": True,
+                "confidence": 0.0,
+                "raw_score": 0.0,
+                "model_loaded": False,
+                "error": str(exc),
+            }
+
+    # If AI classifies as NORMAL, bypass expensive classical edge & measurement processing
+    if ai_res is not None and not ai_res["is_crack"] and skip_if_normal:
+        pre = preprocessing.preprocess_pipeline(image_bgr)
+        resized = pre["resized"]
+        lighting = pre["lighting_label"]
+        final_img = annotate_normal(resized, ai_res)
+
+        if save_outputs:
+            save("final", image_id, final_img)
+
+        measurements = {
+            "ai": ai_res,
+            "crack_detected": False,
+            "length": {"length_px": 0, "length_cm": 0.0},
+            "width": {
+                "min_width_px": 0,
+                "max_width_px": 0,
+                "avg_width_px": 0,
+                "min_width_cm": 0.0,
+                "max_width_cm": 0.0,
+                "avg_width_cm": 0.0,
+                "orientation_type": "N/A",
+                "orientation_deg": 0.0,
+                "severity_level": "NONE",
+            },
+            "area": {
+                "crack_area_px": 0,
+                "wall_area_px": int(resized.shape[0] * resized.shape[1]),
+                "damage_percentage": 0.0,
+                "crack_area_cm2": 0.0,
+                "wall_area_cm2": None,
+            },
+            "confidence": 0.0,  # Classical confidence score remains 0
+            "lighting_detected": lighting,
+            "segmentation_method": "N/A (AI screen: Normal)",
+            "calibrated": False,
+            "timings_sec": {},
+        }
+        return final_img, measurements
+
+    # Existing classical pipeline execution
     pre = preprocessing.preprocess_pipeline(image_bgr)
     resized, gray, enhanced, denoised = pre["resized"], pre["grayscale"], pre["enhanced"], pre["denoised"]
     lighting = pre["lighting_label"]
@@ -140,6 +219,8 @@ def run_pipeline(image_path, chosen_algo="canny", reference_cm=10.0, save_output
         save("heatmap", image_id, heatmap_img)
 
     measurements = {
+        "ai": ai_res,
+        "crack_detected": True,
         "length": length_result,
         "width": width_result,
         "area": area_result,
@@ -166,12 +247,23 @@ if __name__ == "__main__":
     algo = sys.argv[2] if len(sys.argv) > 2 else "canny"
     _, m = run_pipeline(img_path, chosen_algo=algo)
 
-    print(f"\nLighting detected : {m['lighting_detected']}")
+    if m.get("ai"):
+        ai_m = m["ai"]
+        print(f"\n--- AI Classification (MobileNetV2) ---")
+        print(f"Status            : {ai_m['status']}")
+        print(f"Confidence        : {ai_m['confidence']}% (raw score: {ai_m['raw_score']})")
+        if not m.get("crack_detected", True):
+            print(f"Result            : Sound wall detected. Detailed crack quantification pipeline skipped.")
+            sys.exit(0)
+
+    print(f"\n--- Classical Image Processing Analysis ---")
+    print(f"Lighting detected : {m['lighting_detected']}")
     print(f"Segmentation used : {m['segmentation_method']}")
     print(f"Calibrated        : {m['calibrated']}")
-    print(f"Confidence        : {m['confidence']}%")
+    print(f"Classical Conf    : {m['confidence']}%")
     print(f"Severity Level    : {m['width']['severity_level']}")
     print(f"Orientation       : {m['width']['orientation_type']} ({m['width']['orientation_deg']} deg)")
     print(f"Length            : {m['length']}")
     print(f"Width             : {m['width']}")
     print(f"Area/Damage       : {m['area']}")
+

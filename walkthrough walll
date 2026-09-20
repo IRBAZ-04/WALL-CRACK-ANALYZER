@@ -1,0 +1,119 @@
+# Walkthrough: MobileNetV2 AI Wall Crack Classifier Integration
+
+Successfully integrated your pre-trained MobileNetV2 crack-vs-normal AI classifier (`models/wall_crack_mobilenetv2.keras`) into the existing Wall Crack Analyzer codebase while completely preserving all existing classical image processing pipelines, measurements, and GUI tools.
+
+---
+
+## 1. Files Created
+
+- **[ai/\_\_init\_\_.py](file:///d:/SEM5%20PROJECTS/WALL%20CRACK%20ANALYZER/ai/__init__.py)**: Package initializer exposing `CrackClassifier` and the singleton accessor `get_classifier()`.
+- **[ai/crack_classifier.py](file:///d:/SEM5%20PROJECTS/WALL%20CRACK%20ANALYZER/ai/crack_classifier.py)**: Clean AI module implementing:
+  - Project-relative model path resolution (`models/wall_crack_mobilenetv2.keras`).
+  - Model loading once via singleton reuse (`get_classifier()`).
+  - Strict RGB color preservation, resize to $224 \times 224 \times 3$.
+  - Exact `preprocess_input` scaling without redundant division by 255.
+  - Classification threshold at $0.50$ (scores $\ge 0.5$ $\rightarrow$ `CRACK`, $< 0.5$ $\rightarrow$ `NORMAL`).
+  - Graceful fallback on missing model, unreadable image, or corrupt array inputs.
+- **[evaluation/test_ai_integration.py](file:///d:/SEM5%20PROJECTS/WALL%20CRACK%20ANALYZER/evaluation/test_ai_integration.py)**: Automated test suite covering all 6 validation criteria.
+
+---
+
+## 2. Files Modified
+
+- **[requirements.txt](file:///d:/SEM5%20PROJECTS/WALL%20CRACK%20ANALYZER/requirements.txt)**:
+  - Added `tensorflow` without altering any existing libraries.
+- **[main.py](file:///d:/SEM5%20PROJECTS/WALL%20CRACK%20ANALYZER/main.py)**:
+  - Added `run_ai=True` and `skip_if_normal=True` options to `run_pipeline()`.
+  - Added `annotate_normal()` for clean "AI: NO CRACK DETECTED" visual status badges.
+  - If AI detects `NORMAL`, bypasses expensive edge detection, segmentation, and skeletonization.
+  - If AI detects `CRACK`, executes the full classical pipeline and attaches separate `ai` metrics.
+  - Preserved `crack_confidence_score()` as purely classical and distinct from AI confidence.
+  - Updated CLI output to display both AI screening and classical quantification.
+- **[gui/app_pyside.py](file:///d:/SEM5%20PROJECTS/WALL%20CRACK%20ANALYZER/gui/app_pyside.py)**:
+  - Integrated immediate AI screening into `_upload_photo` and `_open_webcam` on status bar.
+  - Updated `_run_pipeline`: if AI detects `NORMAL`, displays information dialog, updates HUD, and skips heavy pipeline processing. If `CRACK`, completes full pipeline.
+  - Added separate `AI CONFIDENCE` KPI card alongside `CLASSICAL CONF` in the Measurements HUD.
+  - Updated Metric Breakdown text to display separate AI screening and classical analysis blocks.
+- **[gui/app.py](file:///d:/SEM5%20PROJECTS/WALL%20CRACK%20ANALYZER/gui/app.py)**:
+  - Updated Tkinter GUI to run AI classification first and display AI status in the status label, dialogs, and Measurements tab text.
+
+---
+
+## 3. Workflow Diagram
+
+```mermaid
+flowchart TD
+    A[User Selects / Uploads Image] --> B[MobileNetV2 AI Classifier\nmodels/wall_crack_mobilenetv2.keras]
+    B --> C{Score >= 0.5?}
+    C -- No (NORMAL) --> D[Show 'NO CRACK DETECTED'\nAI Confidence %\nBypass Classical Processing]
+    C -- Yes (CRACK) --> E[Show 'CRACK DETECTED'\nAI Confidence %]
+    E --> F[Classical CLAHE / Lighting Preprocessing]
+    F --> G[Edge Detection: Sobel / Prewitt / Laplacian / Canny / Fusion]
+    G --> H[Otsu / Adaptive Segmentation & Morphology]
+    H --> I[Skeletonization & Euclidean Distance Transform]
+    I --> J[Physical Measurement: Length / Width / Area / Damage %]
+    I --> K[Structural Risk Severity & Orientation Triage]
+    J --> L[Update GUI HUD, Stages Grid & 3D Surface Relief]
+    K --> L
+```
+
+---
+
+## 4. Test & Verification Results
+
+Ran automated test suite `.\.venv\Scripts\python.exe evaluation/test_ai_integration.py`:
+
+| Test Case | Input | Expected Result | Actual Output | Status |
+|---|---|---|---|---|
+| **Normal Wall** | `dataset/raw/CAMPUS_CLEAN_007.jpg` | `NO CRACK DETECTED` | Status: `NO CRACK DETECTED`, Label: `NORMAL`, Conf: `79.9%`, Raw: `0.2010` (Pipeline skipped) | **PASSED** |
+| **Cracked Wall** | `dataset/raw/CAMPUS_ACADEMIC_001.jpg` | `CRACK DETECTED` | Status: `CRACK DETECTED`, Label: `CRACK`, Conf: `99.98%`, Raw: `0.9998` (Full pipeline ran) | **PASSED** |
+| **Invalid Image** | Missing file & empty array | Handled gracefully | Returned `is_crack=True` fallback with error description; no crash | **PASSED** |
+| **Missing Model** | Non-existent `.keras` path | Handled gracefully | Reported `model_loaded=False`, status `AI_UNAVAILABLE`, safe fallback | **PASSED** |
+| **Classical Only** | `run_pipeline(..., run_ai=False)` | Classical pipeline untouched | Computed exact classical length, width, area, timings | **PASSED** |
+| **Singleton Reuse** | `get_classifier()` called $2\times$ | Model loaded once | `c1 is c2` is `True`, `c1.model is c2.model` is `True` | **PASSED** |
+
+---
+
+## 5. How to Install Dependencies
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+*(Note: TensorFlow is already installed and verified in `.venv`)*
+
+---
+
+## 6. How to Run the Application
+
+### Launch PySide6 GUI (Recommended):
+```powershell
+.\.venv\Scripts\python.exe gui/app_pyside.py
+```
+
+### Launch Tkinter GUI:
+```powershell
+.\.venv\Scripts\python.exe gui/app.py
+```
+
+### Run CLI on Single Image:
+```powershell
+# Cracked image (Triggers AI CRACK + Full Classical Pipeline):
+.\.venv\Scripts\python.exe main.py dataset/raw/CAMPUS_ACADEMIC_001.jpg canny
+
+# Normal image (Triggers AI NORMAL + Bypasses Classical Pipeline):
+.\.venv\Scripts\python.exe main.py dataset/raw/CAMPUS_CLEAN_007.jpg canny
+```
+
+### Run Automated Integration Tests:
+```powershell
+.\.venv\Scripts\python.exe evaluation/test_ai_integration.py
+```
+
+---
+
+## 7. Issues Found & Resolutions
+
+1. **Virtual Environment Pip Missing**: `.venv` had python binaries but pip was initially unregistered. Ran `ensurepip` to restore pip without modifying other packages.
+2. **Keras 3 Model Format Compatibility**: The `.keras` file was saved with Keras 3 (`keras_version: 3.13.2`). Loaded via `keras.models.load_model(..., compile=False)` to prevent legacy Keras conflicts.
+3. **Class Calibration**: Empirically confirmed across all sample images in `dataset/raw/` that the model outputs sigmoid scores $\approx 1.0$ ($0.9968 - 1.0000$) for cracked walls and $< 0.5$ ($0.2010$) for clean walls, perfectly matching threshold $0.50$.

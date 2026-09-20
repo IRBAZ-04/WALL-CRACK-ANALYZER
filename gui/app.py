@@ -126,13 +126,27 @@ class WallCrackApp(tk.Tk):
             messagebox.showwarning("No image", "Please upload an image first.")
             return
         try:
-            self.status_label.config(text="Running pipeline... please wait.")
+            self.status_label.config(text="Running MobileNetV2 screening & analysis... please wait.")
             self.update_idletasks()
             final_img, measurements = pipeline.run_pipeline(
-                self.image_path, chosen_algo=self.selected_algo.get()
+                self.image_path, chosen_algo=self.selected_algo.get(), run_ai=True
             )
             self.measurements = measurements
-            self.status_label.config(text="Analysis complete. See 'Measurements' and 'Processing Stages' tabs.")
+            ai = measurements.get("ai", {})
+            if not measurements.get("crack_detected", True):
+                self.status_label.config(text=f"AI: NO CRACK DETECTED ({ai.get('confidence', 0)}%) — Crack analysis skipped.")
+                messagebox.showinfo(
+                    "No Crack Detected",
+                    f"AI MobileNetV2 Classifier Result:\n\n"
+                    f"Status: NO CRACK DETECTED\n"
+                    f"AI Confidence: {ai.get('confidence', 0)}%\n\n"
+                    f"The wall is classified as sound/normal.\n"
+                    f"Detailed crack measurement pipeline was skipped."
+                )
+            else:
+                ai_txt = f"AI: {ai.get('status')} ({ai.get('confidence')}%) | " if ai else ""
+                self.status_label.config(text=f"{ai_txt}Analysis complete. See 'Measurements' and 'Processing Stages'.")
+
             self._refresh_stages_tab()
             self._refresh_measure_tab()
         except Exception as e:
@@ -171,7 +185,7 @@ class WallCrackApp(tk.Tk):
         if path and os.path.exists(path):
             self._show_image(path, self.stage_preview, max_size=(700, 450))
         else:
-            self.stage_preview.config(image="", text="Not generated yet — run Analyze Image first.")
+            self.stage_preview.config(image="", text="Not generated (bypassed if normal or run Analyze Image first).")
 
     # ---------------- MEASUREMENTS ----------------
     def _build_measure_tab(self):
@@ -184,39 +198,71 @@ class WallCrackApp(tk.Tk):
 
     def _refresh_measure_tab(self):
         m = self.measurements
-        crack_detected = m["area"]["crack_area_px"] > 0
-        lines = [
-            f"CRACK DETECTED: {'YES' if crack_detected else 'NO'}",
-            f"Confidence Score: {m['confidence']}%",
-            "",
-            f"Lighting condition detected: {m['lighting_detected']}",
-            f"Segmentation method used   : {m['segmentation_method']}",
-            f"Reference-marker calibrated: {m['calibrated']}",
-            "",
-            "--- LENGTH ---",
-            f"  {m['length']['length_px']} px"
-            + (f"  (~{m['length']['length_cm']} cm)" if m['length']['length_cm'] else "  (no calibration marker found — pixel value only)"),
-            "",
-            "--- WIDTH ---",
-            f"  Min: {m['width']['min_width_px']} px" + (f" (~{m['width']['min_width_cm']} cm)" if m['width']['min_width_cm'] else ""),
-            f"  Max: {m['width']['max_width_px']} px" + (f" (~{m['width']['max_width_cm']} cm)" if m['width']['max_width_cm'] else ""),
-            f"  Avg: {m['width']['avg_width_px']} px" + (f" (~{m['width']['avg_width_cm']} cm)" if m['width']['avg_width_cm'] else ""),
-            "",
-            "--- AREA / DAMAGE ---",
-            f"  Crack area   : {m['area']['crack_area_px']} px" + (f" (~{m['area']['crack_area_cm2']} cm2)" if m['area']['crack_area_cm2'] else ""),
-            f"  Wall area    : {m['area']['wall_area_px']} px",
-            f"  Damage %     : {m['area']['damage_percentage']}%",
-            "",
-            "--- PROCESSING TIME (per algorithm, seconds) ---",
-        ]
-        for algo, t in m["timings_sec"].items():
-            lines.append(f"  {algo:<12}: {t:.5f}s")
+        ai = m.get("ai")
+        lines = []
+
+        if ai and ai.get("model_loaded"):
+            lines.extend([
+                "==================================================",
+                "   AI CLASSIFICATION (MobileNetV2 Classifier)     ",
+                "==================================================",
+                f"Status            : {ai.get('status', 'N/A')}",
+                f"AI Confidence     : {ai.get('confidence', 0.0)}%",
+                f"Raw Sigmoid Score : {ai.get('raw_score', 0.0)} (Threshold: 0.50)",
+                "",
+            ])
+        else:
+            lines.extend([
+                "AI CLASSIFICATION : NOT AVAILABLE (Classical fallback)",
+                "",
+            ])
+
+        if not m.get("crack_detected", True):
+            lines.extend([
+                "RESULT: SOUND / NORMAL WALL DETECTED",
+                "Detailed crack quantification pipeline was skipped to save computation.",
+                "",
+                f"Lighting condition detected: {m['lighting_detected']}",
+            ])
+        else:
+            lines.extend([
+                "==================================================",
+                "       CLASSICAL IMAGE PROCESSING RESULTS         ",
+                "==================================================",
+                f"CRACK DETECTED: YES",
+                f"Classical Confidence Score: {m['confidence']}%",
+                "",
+                f"Lighting condition detected: {m['lighting_detected']}",
+                f"Segmentation method used   : {m['segmentation_method']}",
+                f"Reference-marker calibrated: {m['calibrated']}",
+                "",
+                "--- LENGTH ---",
+                f"  {m['length']['length_px']} px"
+                + (f"  (~{m['length']['length_cm']} cm)" if m['length']['length_cm'] else "  (no calibration marker found — pixel value only)"),
+                "",
+                "--- WIDTH ---",
+                f"  Min: {m['width']['min_width_px']} px" + (f" (~{m['width']['min_width_cm']} cm)" if m['width']['min_width_cm'] else ""),
+                f"  Max: {m['width']['max_width_px']} px" + (f" (~{m['width']['max_width_cm']} cm)" if m['width']['max_width_cm'] else ""),
+                f"  Avg: {m['width']['avg_width_px']} px" + (f" (~{m['width']['avg_width_cm']} cm)" if m['width']['avg_width_cm'] else ""),
+                f"  Severity: {m['width']['severity_level']}",
+                f"  Orientation: {m['width']['orientation_type']} ({m['width']['orientation_deg']} deg)",
+                "",
+                "--- AREA / DAMAGE ---",
+                f"  Crack area   : {m['area']['crack_area_px']} px" + (f" (~{m['area']['crack_area_cm2']} cm2)" if m['area']['crack_area_cm2'] else ""),
+                f"  Wall area    : {m['area']['wall_area_px']} px",
+                f"  Damage %     : {m['area']['damage_percentage']}%",
+                "",
+                "--- PROCESSING TIME (per algorithm, seconds) ---",
+            ])
+            for algo, t in m["timings_sec"].items():
+                lines.append(f"  {algo:<12}: {t:.5f}s")
 
         text = "\n".join(lines)
         self.measure_text.config(state="normal")
         self.measure_text.delete("1.0", "end")
         self.measure_text.insert("1.0", text)
         self.measure_text.config(state="disabled")
+
 
     # ---------------- COMPARISON ----------------
     def _build_compare_tab(self):
