@@ -1,24 +1,56 @@
 """
-sobel.py — Sobel edge detection.
+algorithms/sobel.py
+-------------------
+Sobel edge detection implemented from scratch in pure NumPy.
 
-Concept: Sobel convolves the image with two 3x3 kernels (one for
-horizontal gradient Gx, one for vertical gradient Gy). The gradient
-magnitude sqrt(Gx^2 + Gy^2) is high wherever intensity changes
-sharply — i.e. at edges, including crack boundaries.
+Mathematical Formulation:
+Convolves the image with two orthogonal 3x3 gradient operators:
+    Gx = [[ -1,  0,  1 ],
+          [ -2,  0,  2 ],
+          [ -1,  0,  1 ]]
+
+    Gy = [[ -1, -2, -1 ],
+          [  0,  0,  0 ],
+          [  1,  2,  1 ]]
+
+Total gradient magnitude:
+    G = sqrt(Gx^2 + Gy^2)
+Normalized to [0, 255] uint8.
 """
 
-import cv2
-import numpy as np
 import time
+import numpy as np
+from .convolution import convolve2d
+
+SOBEL_X = np.array([
+    [-1,  0,  1],
+    [-2,  0,  2],
+    [-1,  0,  1]
+], dtype=np.float64)
+
+SOBEL_Y = np.array([
+    [-1, -2, -1],
+    [ 0,  0,  0],
+    [ 1,  2,  1]
+], dtype=np.float64)
 
 
-def detect(gray_image):
+def detect(gray_image: np.ndarray) -> tuple:
+    """
+    Computes Sobel gradient magnitude image in pure NumPy.
+    Returns (magnitude_map, elapsed_seconds).
+    """
     start = time.time()
 
-    gx = cv2.Sobel(gray_image, cv2.CV_64F, 1, 0, ksize=3)
-    gy = cv2.Sobel(gray_image, cv2.CV_64F, 0, 1, ksize=3)
+    gx = convolve2d(gray_image, SOBEL_X, padding="reflect")
+    gy = convolve2d(gray_image, SOBEL_Y, padding="reflect")
+
     magnitude = np.sqrt(gx ** 2 + gy ** 2)
-    magnitude = np.uint8(255 * magnitude / (np.max(magnitude) + 1e-6))
+    max_val = np.max(magnitude)
+    if max_val > 0:
+        magnitude = np.uint8(255.0 * (magnitude / max_val))
+    else:
+        magnitude = np.zeros_like(gray_image, dtype=np.uint8)
 
     elapsed = time.time() - start
     return magnitude, elapsed

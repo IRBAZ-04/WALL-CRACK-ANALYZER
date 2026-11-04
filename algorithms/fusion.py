@@ -25,7 +25,6 @@ whether fusion actually improves F1-score — you must not simply
 assert it does without measuring it.
 """
 
-import cv2
 import numpy as np
 import time
 

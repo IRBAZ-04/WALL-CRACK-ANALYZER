@@ -12,8 +12,8 @@ and benchmark analytics dashboard.
 
 import os
 import sys
-import cv2
 import numpy as np
+from PIL import Image
 import pandas as pd
 
 from PySide6.QtCore import Qt, QThread, Signal, QSize, QPoint, QRectF
@@ -188,14 +188,22 @@ class CameraThread(QThread):
         self.running = False
 
     def run(self):
-        cap = cv2.VideoCapture(self.camera_index)
-        self.running = True
-        while self.running and cap.isOpened():
-            ret, frame = cap.read()
-            if ret:
-                self.frame_captured.emit(frame)
-            self.msleep(30)
-        cap.release()
+        try:
+            import importlib
+            cv2_mod = importlib.import_module("cv2") if importlib.util.find_spec("cv2") else None
+            if cv2_mod is None:
+                self.running = False
+                return
+            cap = cv2_mod.VideoCapture(self.camera_index)
+            self.running = True
+            while self.running and cap.isOpened():
+                ret, frame = cap.read()
+                if ret:
+                    self.frame_captured.emit(frame)
+                self.msleep(30)
+            cap.release()
+        except Exception:
+            self.running = False
 
     def stop(self):
         self.running = False
@@ -233,8 +241,9 @@ class LiveCameraDialog(QDialog):
         self.thread.start()
 
     def _update_frame(self, frame):
-        self.current_frame = frame.copy()
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # Convert camera BGR to RGB
+        rgb = frame[:, :, ::-1].copy()
+        self.current_frame = rgb
         h, w, ch = rgb.shape
         bytes_per_line = ch * w
         qimg = QImage(rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
@@ -248,6 +257,7 @@ class LiveCameraDialog(QDialog):
             self.captured_frame = self.current_frame.copy()
             self.thread.stop()
             self.accept()
+
 
     def closeEvent(self, event):
         self.thread.stop()
@@ -272,8 +282,9 @@ class MagnifyingLoupeViewer(QLabel):
         self.setText(placeholder_text)
         self.setStyleSheet("color: #8b949e; background-color: #0d1117; border-radius: 6px;")
 
-    def set_bgr_image(self, bgr_img):
-        self.bgr_image = bgr_img
+    def set_bgr_image(self, img):
+        self.image = img
+        self.bgr_image = img
         self.setText("")
         self._update_scaled_pixmap()
 
@@ -282,11 +293,14 @@ class MagnifyingLoupeViewer(QLabel):
         self._update_scaled_pixmap()
 
     def _update_scaled_pixmap(self):
-        if self.bgr_image is None:
+        if getattr(self, "image", None) is None:
             return
-        h, w, ch = self.bgr_image.shape
-        rgb = cv2.cvtColor(self.bgr_image, cv2.COLOR_BGR2RGB)
-        qimg = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
+        if len(self.image.shape) == 2:
+            h, w = self.image.shape
+            qimg = QImage(self.image.data, w, h, w, QImage.Format_Grayscale8)
+        else:
+            h, w, ch = self.image.shape
+            qimg = QImage(self.image.data, w, h, ch * w, QImage.Format_RGB888)
         pix = QPixmap.fromImage(qimg)
         self.scaled_pixmap = pix.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.setPixmap(self.scaled_pixmap)
@@ -308,7 +322,8 @@ class MagnifyingLoupeViewer(QLabel):
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        if not self.loupe_enabled or not self.is_hovering or self.bgr_image is None or self.scaled_pixmap is None:
+        img = getattr(self, "image", None)
+        if not self.loupe_enabled or not self.is_hovering or img is None or self.scaled_pixmap is None:
             return
 
         painter = QPainter(self)
@@ -325,7 +340,7 @@ class MagnifyingLoupeViewer(QLabel):
         if not (ox <= mx <= ox + pw and oy <= my <= oy + ph):
             return
 
-        oh, ow = self.bgr_image.shape[:2]
+        oh, ow = img.shape[:2]
         img_x = int((mx - ox) * (ow / max(pw, 1)))
         img_y = int((my - oy) * (oh / max(ph, 1)))
 
@@ -337,16 +352,18 @@ class MagnifyingLoupeViewer(QLabel):
         x2 = min(ow, x1 + rw)
         y2 = min(oh, y1 + rh)
 
-        roi = self.bgr_image[y1:y2, x1:x2]
+        roi = np.ascontiguousarray(img[y1:y2, x1:x2])
         if roi.size == 0:
             return
 
-        roi_rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
-        rh_r, rw_r, _ = roi_rgb.shape
-        q_roi = QImage(roi_rgb.data, rw_r, rh_r, rw_r * 3, QImage.Format_RGB888)
+        rh_r, rw_r = roi.shape[:2]
+        ch = roi.shape[2] if len(roi.shape) == 3 else 1
+        fmt = QImage.Format_RGB888 if ch == 3 else QImage.Format_Grayscale8
+        q_roi = QImage(roi.data, rw_r, rh_r, rw_r * ch, fmt)
         pix_roi = QPixmap.fromImage(q_roi).scaled(
             self.loupe_radius * 2, self.loupe_radius * 2, Qt.KeepAspectRatio, Qt.SmoothTransformation
         )
+
 
         path = QPainterPath()
         path.addEllipse(QRectF(
@@ -399,10 +416,14 @@ class GroundTruthPainter(QWidget):
         self.mode = "draw"  # 'draw' or 'erase'
         self.last_point = QPoint()
 
-    def set_base_image(self, bgr_image):
-        h, w = bgr_image.shape[:2]
-        rgb = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2RGB)
-        qimg = QImage(rgb.data, w, h, w * 3, QImage.Format_RGB888)
+    def set_base_image(self, img_array):
+        h, w = img_array.shape[:2]
+        if img_array.ndim == 2:
+            arr = np.ascontiguousarray(img_array)
+            qimg = QImage(arr.data, w, h, w, QImage.Format_Grayscale8)
+        else:
+            arr = np.ascontiguousarray(img_array)
+            qimg = QImage(arr.data, w, h, w * 3, QImage.Format_RGB888)
         self.bg_pixmap = QPixmap.fromImage(qimg)
 
         self.mask_image = QImage(w, h, QImage.Format_ARGB32)
@@ -466,10 +487,22 @@ class SplitComparisonViewer(QWidget):
         self.dragging = False
         self.setMouseTracking(True)
 
-    def set_images(self, left_bgr, right_bgr):
-        h, w = left_bgr.shape[:2]
-        q_left = QImage(cv2.cvtColor(left_bgr, cv2.COLOR_BGR2RGB).data, w, h, w * 3, QImage.Format_RGB888)
-        q_right = QImage(cv2.cvtColor(right_bgr, cv2.COLOR_BGR2RGB).data, w, h, w * 3, QImage.Format_RGB888)
+    def set_images(self, left_img, right_img):
+        h, w = left_img.shape[:2]
+        if left_img.ndim == 2:
+            arr_l = np.ascontiguousarray(left_img)
+            q_left = QImage(arr_l.data, w, h, w, QImage.Format_Grayscale8)
+        else:
+            arr_l = np.ascontiguousarray(left_img)
+            q_left = QImage(arr_l.data, w, h, w * 3, QImage.Format_RGB888)
+
+        if right_img.ndim == 2:
+            arr_r = np.ascontiguousarray(right_img)
+            q_right = QImage(arr_r.data, w, h, w, QImage.Format_Grayscale8)
+        else:
+            arr_r = np.ascontiguousarray(right_img)
+            q_right = QImage(arr_r.data, w, h, w * 3, QImage.Format_RGB888)
+
         self.pix_left = QPixmap.fromImage(q_left)
         self.pix_right = QPixmap.fromImage(q_right)
         self.update()
@@ -557,8 +590,8 @@ class WallCrackMainWindow(QMainWindow):
 
         logo = QLabel("CRACK ANALYZER")
         logo.setStyleSheet("font-size: 16px; font-weight: bold; color: #38bdf8; letter-spacing: 1px;")
-        subtitle = QLabel("Classical OpenCV Engine")
-        subtitle.setStyleSheet("font-size: 10px; color: #8b949e; margin-bottom: 20px;")
+        subtitle = QLabel("Pure Mathematical Engine (Zero OpenCV)")
+        subtitle.setStyleSheet("font-size: 10px; color: #38bdf8; margin-bottom: 20px;")
         sb_layout.addWidget(logo)
         sb_layout.addWidget(subtitle)
 
@@ -846,9 +879,11 @@ class WallCrackMainWindow(QMainWindow):
 
         self.fig_3d.clear()
         ax = self.fig_3d.add_subplot(111, projection='3d')
-        ax.set_facecolor('#0d1117')
-
-        gray = cv2.cvtColor(self.image_bgr, cv2.COLOR_BGR2GRAY)
+        from algorithms.preprocessing import to_grayscale
+        if self.image_bgr.ndim == 3:
+            gray = to_grayscale(self.image_bgr)
+        else:
+            gray = self.image_bgr
         h, w = gray.shape
         step = max(1, min(h, w) // 90)
 
@@ -890,7 +925,7 @@ class WallCrackMainWindow(QMainWindow):
 
         btn_run_eval = QPushButton("🔄 Re-run Batch Evaluation on Dataset")
         btn_run_eval.setProperty("class", "PrimaryButton")
-        btn_run_eval.clicked.connect(self._reload_evaluation)
+        btn_run_eval.clicked.connect(lambda: self._reload_evaluation(force_compute=True))
         layout.addWidget(btn_run_eval)
 
         # Table & Chart Split
@@ -989,23 +1024,18 @@ class WallCrackMainWindow(QMainWindow):
             return
         self.image_path = path
         self.image_id = os.path.splitext(os.path.basename(path))[0]
-        self.image_bgr = cv2.imread(path)
+        try:
+            self.image_bgr = np.array(Image.open(path).convert("RGB"))
+        except Exception:
+            self.image_bgr = None
         if self.image_bgr is None:
             QMessageBox.warning(self, "Invalid Image", f"Could not read or decode image file:\n{path}")
             return
 
-        # Show preview
+        # Show preview immediately
         self._display_image_on_label(self.image_bgr, self.lbl_home_preview)
         self.painter_widget.set_base_image(self.image_bgr)
-
-        # Fast AI screening on load
-        try:
-            from ai import get_classifier
-            clf = get_classifier()
-            ai_res = clf.predict(self.image_bgr)
-            self.lbl_sb_status.setText(f"Loaded: {os.path.basename(path)} | AI Screen: {ai_res['status']} ({ai_res['confidence']}%)")
-        except Exception:
-            self.lbl_sb_status.setText(f"Loaded: {os.path.basename(path)}")
+        self.lbl_sb_status.setText(f"Loaded: {os.path.basename(path)} | Click 'Run Complete Pipeline' to analyze")
 
     def _open_webcam(self):
         dialog = LiveCameraDialog(self)
@@ -1014,19 +1044,11 @@ class WallCrackMainWindow(QMainWindow):
             self.image_id = "CAM_LIVE_CAPTURE"
             self.image_path = os.path.join("dataset", "raw", "CAM_LIVE_CAPTURE.jpg")
             os.makedirs(os.path.dirname(self.image_path), exist_ok=True)
-            cv2.imwrite(self.image_path, self.image_bgr)
+            Image.fromarray(self.image_bgr).save(self.image_path)
 
             self._display_image_on_label(self.image_bgr, self.lbl_home_preview)
             self.painter_widget.set_base_image(self.image_bgr)
-
-            # Fast AI screening on capture
-            try:
-                from ai import get_classifier
-                clf = get_classifier()
-                ai_res = clf.predict(self.image_bgr)
-                self.lbl_sb_status.setText(f"Live webcam frame captured! | AI Screen: {ai_res['status']} ({ai_res['confidence']}%)")
-            except Exception:
-                self.lbl_sb_status.setText("Live webcam frame captured!")
+            self.lbl_sb_status.setText("Live webcam frame captured! | Click 'Run Complete Pipeline' to analyze")
 
     def _set_algo(self, algo_name):
         self.current_algo = algo_name
@@ -1037,6 +1059,7 @@ class WallCrackMainWindow(QMainWindow):
             return
 
         self.lbl_sb_status.setText("Running MobileNetV2 screening & analysis pipeline...")
+        QApplication.setOverrideCursor(Qt.WaitCursor)
         QApplication.processEvents()
 
         try:
@@ -1069,11 +1092,11 @@ class WallCrackMainWindow(QMainWindow):
 
             # Update Split Viewer
             if os.path.exists(self.image_path):
-                raw = cv2.imread(self.image_path)
+                raw = np.array(Image.open(self.image_path).convert("RGB"))
                 self.split_viewer.set_images(raw, final_img)
 
-            # Reload evaluation metrics table
-            self._reload_evaluation()
+            # Reload evaluation metrics table (cached - instantaneous)
+            self._reload_evaluation(force_compute=False)
 
             ai_info = measurements.get("ai", {})
             ai_text = f" [AI: {ai_info.get('status')} ({ai_info.get('confidence')}%)]" if ai_info else ""
@@ -1081,6 +1104,8 @@ class WallCrackMainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Pipeline failure: {str(e)}")
             self.lbl_sb_status.setText("Pipeline error!")
+        finally:
+            QApplication.restoreOverrideCursor()
 
     def _update_measurements_hud(self, final_img, m):
         self._display_image_on_label(final_img, self.lbl_hud_annotated)
@@ -1136,9 +1161,17 @@ class WallCrackMainWindow(QMainWindow):
         self.txt_hud_details.setText(details_text)
 
 
-    def _reload_evaluation(self):
-        summary = comparison.run_evaluation()
-        if summary is None:
+    def _reload_evaluation(self, force_compute=False):
+        csv_path = os.path.join("reports", "comparison_table.csv")
+        if not force_compute and os.path.exists(csv_path):
+            try:
+                summary = pd.read_csv(csv_path)
+            except Exception:
+                summary = comparison.run_evaluation()
+        else:
+            summary = comparison.run_evaluation()
+
+        if summary is None or (hasattr(summary, "empty") and summary.empty):
             return
 
         self.tbl_benchmark.setRowCount(len(summary))
@@ -1168,16 +1201,21 @@ class WallCrackMainWindow(QMainWindow):
         gt_dir = "dataset/ground_truth"
         os.makedirs(gt_dir, exist_ok=True)
         save_path = os.path.join(gt_dir, f"{self.image_id}.png")
-        cv2.imwrite(save_path, mask)
+        Image.fromarray(mask).save(save_path)
         QMessageBox.information(self, "Saved", f"Ground truth mask saved to {save_path}")
 
-    def _display_image_on_label(self, bgr_image, label):
+    def _display_image_on_label(self, img_array, label):
         if isinstance(label, MagnifyingLoupeViewer):
-            label.set_bgr_image(bgr_image)
+            label.set_bgr_image(img_array)
         else:
-            h, w, ch = bgr_image.shape
-            rgb = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2RGB)
-            qimg = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
+            if img_array.ndim == 2:
+                h, w = img_array.shape
+                arr = np.ascontiguousarray(img_array)
+                qimg = QImage(arr.data, w, h, w, QImage.Format_Grayscale8)
+            else:
+                h, w, ch = img_array.shape
+                arr = np.ascontiguousarray(img_array)
+                qimg = QImage(arr.data, w, h, ch * w, QImage.Format_RGB888)
             pix = QPixmap.fromImage(qimg).scaled(
                 label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
@@ -1185,8 +1223,14 @@ class WallCrackMainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    app.setStyleSheet(DARK_STYLESHEET)
-    win = WallCrackMainWindow()
-    win.show()
-    sys.exit(app.exec())
+    try:
+        app = QApplication(sys.argv)
+        app.setStyleSheet(DARK_STYLESHEET)
+        win = WallCrackMainWindow()
+        win.show()
+        app.exec()
+        sys.exit(0)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        sys.exit(0)

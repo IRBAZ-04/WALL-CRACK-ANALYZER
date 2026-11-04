@@ -1,30 +1,46 @@
 """
-width.py
----------
-Estimates crack width using the Euclidean distance transform, calculates
-crack orientation angle via Image Moments / PCA, and assesses structural risk level.
+algorithms/measurement/width.py
+-------------------------------
+Estimates crack width using Euclidean Distance Transform (EDT), calculates
+crack orientation angle via Principal Component Analysis (PCA covariance matrix),
+and assesses structural risk level.
+100% pure NumPy / SciPy implementation with ZERO OpenCV dependencies.
 """
 
-import cv2
 import numpy as np
+from scipy.ndimage import distance_transform_edt
 
 
-def compute_orientation_and_type(ys, xs):
+def compute_orientation_and_type(ys: np.ndarray, xs: np.ndarray) -> tuple:
+    """
+    Computes primary crack orientation angle from scratch using Principal Component Analysis (PCA).
+    Calculates covariance matrix of crack pixel coordinates and solves for eigenvectors:
+        Cov = (1 / (N - 1)) * (X - μ)^T (X - μ)
+    """
     if len(xs) < 5:
         return 0.0, "Undetermined"
 
-    # Compute orientation using Image Central Moments / Principal Axes
-    pts = np.column_stack((xs, ys)).astype(np.float32)
-    mean, eigenvectors, eigenvalues = cv2.PCACompute2(pts, mean=None)
+    pts = np.column_stack((xs, ys)).astype(np.float64)
+    mean = np.mean(pts, axis=0)
+    centered = pts - mean
 
-    # Primary direction vector
-    v = eigenvectors[0]
-    angle_rad = np.arctan2(abs(v[1]), abs(v[0]))
+    # Covariance matrix 2x2
+    cov = np.cov(centered, rowvar=False)
+
+    # Eigenvalues and eigenvectors
+    eigenvalues, eigenvectors = np.linalg.eigh(cov)
+
+    # Sort in descending order of variance
+    idx = np.argsort(eigenvalues)[::-1]
+    primary_vector = eigenvectors[:, idx[0]]  # [vx, vy]
+
+    # Angle in radians and degrees
+    angle_rad = np.arctan2(abs(primary_vector[1]), abs(primary_vector[0]))
     angle_deg = round(float(np.degrees(angle_rad)), 1)
 
-    if angle_deg >= 70:
+    if angle_deg >= 70.0:
         crack_type = "Vertical (Load-Bearing Shear)"
-    elif angle_deg <= 20:
+    elif angle_deg <= 20.0:
         crack_type = "Horizontal (Thermal/Settlement Joint)"
     else:
         crack_type = "Diagonal (Structural Shear)"
@@ -32,7 +48,7 @@ def compute_orientation_and_type(ys, xs):
     return angle_deg, crack_type
 
 
-def compute_severity_rating(max_width_mm, damage_pct):
+def compute_severity_rating(max_width_mm: float, damage_pct: float) -> tuple:
     if max_width_mm is None:
         max_width_mm = 0.0
 
@@ -46,19 +62,23 @@ def compute_severity_rating(max_width_mm, damage_pct):
         return "CRITICAL (Immediate Structural Review)", "#ef4444"
 
 
-def measure_width(binary_mask, skeleton, cm_per_pixel=None, damage_pct=0.0):
-    dist_transform = cv2.distanceTransform(binary_mask, cv2.DIST_L2, 5)
+def measure_width(binary_mask: np.ndarray, skeleton: np.ndarray, cm_per_pixel: float = None, damage_pct: float = 0.0) -> dict:
+    """
+    Measures crack width at every skeleton pixel using exact Euclidean Distance Transform.
+    """
+    # Euclidean distance transform from background
+    dist_transform = distance_transform_edt(binary_mask > 0)
 
     ys, xs = np.where(skeleton)
     if len(xs) == 0:
         return {
-            "min_width_px": 0, "max_width_px": 0, "avg_width_px": 0,
+            "min_width_px": 0.0, "max_width_px": 0.0, "avg_width_px": 0.0,
             "min_width_cm": None, "max_width_cm": None, "avg_width_cm": None,
             "orientation_deg": 0.0, "orientation_type": "None",
             "severity_level": "NEGLIGIBLE (No Crack)", "severity_color": "#22c55e"
         }
 
-    widths_px = dist_transform[ys, xs] * 2  # radius -> full width
+    widths_px = dist_transform[ys, xs] * 2.0  # radius -> full width
 
     angle_deg, orientation_type = compute_orientation_and_type(ys, xs)
 

@@ -1,34 +1,56 @@
 """
-prewitt.py — Prewitt edge detection.
+algorithms/prewitt.py
+---------------------
+Prewitt edge detection implemented from scratch in pure NumPy.
 
-Concept: Similar to Sobel, but uses simpler uniform-weight 3x3
-kernels instead of Sobel's weighted-center kernels. This makes it
-slightly faster but generally a bit more noise-sensitive than Sobel.
-OpenCV has no built-in Prewitt, so we implement the kernels manually
-with cv2.filter2D — good talking point for the report (shows you
-understand the math, not just calling a library function).
+Mathematical Formulation:
+Uses uniform-weight directional 3x3 difference operators:
+    Gx = [[ -1, 0, 1 ],
+          [ -1, 0, 1 ],
+          [ -1, 0, 1 ]]
+
+    Gy = [[ -1, -1, -1 ],
+          [  0,  0,  0 ],
+          [  1,  1,  1 ]]
+
+Gradient magnitude:
+    G = sqrt(Gx^2 + Gy^2)
+Normalized to [0, 255] uint8.
 """
 
-import cv2
-import numpy as np
 import time
+import numpy as np
+from .convolution import convolve2d
 
-KERNEL_X = np.array([[-1, 0, 1],
-                      [-1, 0, 1],
-                      [-1, 0, 1]], dtype=np.float32)
+PREWITT_X = np.array([
+    [-1,  0,  1],
+    [-1,  0,  1],
+    [-1,  0,  1]
+], dtype=np.float64)
 
-KERNEL_Y = np.array([[-1, -1, -1],
-                      [0, 0, 0],
-                      [1, 1, 1]], dtype=np.float32)
+PREWITT_Y = np.array([
+    [-1, -1, -1],
+    [ 0,  0,  0],
+    [ 1,  1,  1]
+], dtype=np.float64)
 
 
-def detect(gray_image):
+def detect(gray_image: np.ndarray) -> tuple:
+    """
+    Computes Prewitt gradient magnitude image in pure NumPy.
+    Returns (magnitude_map, elapsed_seconds).
+    """
     start = time.time()
 
-    gx = cv2.filter2D(gray_image.astype(np.float32), -1, KERNEL_X)
-    gy = cv2.filter2D(gray_image.astype(np.float32), -1, KERNEL_Y)
+    gx = convolve2d(gray_image, PREWITT_X, padding="reflect")
+    gy = convolve2d(gray_image, PREWITT_Y, padding="reflect")
+
     magnitude = np.sqrt(gx ** 2 + gy ** 2)
-    magnitude = np.uint8(255 * magnitude / (np.max(magnitude) + 1e-6))
+    max_val = np.max(magnitude)
+    if max_val > 0:
+        magnitude = np.uint8(255.0 * (magnitude / max_val))
+    else:
+        magnitude = np.zeros_like(gray_image, dtype=np.uint8)
 
     elapsed = time.time() - start
     return magnitude, elapsed

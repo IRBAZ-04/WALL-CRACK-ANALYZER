@@ -1,25 +1,53 @@
 """
-laplacian.py — Laplacian edge detection.
+algorithms/laplacian.py
+-----------------------
+Laplacian (Laplacian of Gaussian - LoG) edge detection implemented
+from scratch in pure NumPy.
 
-Concept: Unlike Sobel/Prewitt (first-derivative, directional),
-Laplacian is a second-derivative operator — it responds to regions
-where the rate of intensity change itself changes, regardless of
-direction. This makes it good at catching thin cracks in all
-orientations at once, but it is also the most noise-sensitive of the
-four, so we apply a light blur first.
+Mathematical Formulation:
+2nd-order spatial isotropic differential operator:
+    ∇²I = ∂²I/∂x² + ∂²I/∂y²
+
+Approximated on a discrete grid using the 8-neighbor kernel:
+    K = [[ 1,  1,  1 ],
+         [ 1, -8,  1 ],
+         [ 1,  1,  1 ]]
+
+Pre-smoothed with Gaussian kernel G(x, y, σ=1.0) to stabilize against high-frequency noise.
 """
 
-import cv2
-import numpy as np
 import time
+import numpy as np
+from .convolution import convolve2d, create_gaussian_kernel
+
+LAPLACIAN_KERNEL = np.array([
+    [1.0,  1.0,  1.0],
+    [1.0, -8.0,  1.0],
+    [1.0,  1.0,  1.0]
+], dtype=np.float64)
 
 
-def detect(gray_image):
+def detect(gray_image: np.ndarray) -> tuple:
+    """
+    Computes Laplacian of Gaussian (LoG) response in pure NumPy.
+    Returns (response_map, elapsed_seconds).
+    """
     start = time.time()
 
-    blurred = cv2.GaussianBlur(gray_image, (3, 3), 0)
-    lap = cv2.Laplacian(blurred, cv2.CV_64F, ksize=3)
-    lap = np.uint8(255 * np.abs(lap) / (np.max(np.abs(lap)) + 1e-6))
+    # Pre-smoothing via Gaussian filter
+    gauss_k = create_gaussian_kernel(size=3, sigma=1.0)
+    blurred = convolve2d(gray_image, gauss_k, padding="reflect")
+
+    # 2nd derivative discrete Laplacian convolution
+    lap = convolve2d(blurred, LAPLACIAN_KERNEL, padding="reflect")
+
+    # Absolute magnitude response
+    abs_lap = np.abs(lap)
+    max_val = np.max(abs_lap)
+    if max_val > 0:
+        magnitude = np.uint8(255.0 * (abs_lap / max_val))
+    else:
+        magnitude = np.zeros_like(gray_image, dtype=np.uint8)
 
     elapsed = time.time() - start
-    return lap, elapsed
+    return magnitude, elapsed

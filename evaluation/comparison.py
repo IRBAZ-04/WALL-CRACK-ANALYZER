@@ -25,7 +25,8 @@ performance across lighting/crack-type categories.
 
 import os
 import sys
-import cv2
+import numpy as np
+from PIL import Image
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")
@@ -42,8 +43,10 @@ ALGORITHMS = ["sobel", "prewitt", "laplacian", "canny", "fusion"]
 def run_single_image(image_path):
     """Runs the full pipeline for one image, returns dict of
     {algo_name: (binary_mask, elapsed_time)} plus the lighting label."""
-    image = cv2.imread(image_path)
-    if image is None:
+    try:
+        pil_img = Image.open(image_path).convert("RGB")
+        image = np.array(pil_img)
+    except Exception:
         return None, None
 
     pre = preprocessing.preprocess_pipeline(image)
@@ -101,14 +104,21 @@ def run_evaluation(raw_dir="dataset/raw", gt_dir="dataset/ground_truth",
         if raw_path is None:
             continue
 
-        gt_mask = cv2.imread(os.path.join(gt_dir, gt_file), cv2.IMREAD_GRAYSCALE)
+        try:
+            gt_pil = Image.open(os.path.join(gt_dir, gt_file)).convert("L")
+            gt_mask = np.array(gt_pil)
+        except Exception:
+            continue
+
         results, lighting = run_single_image(raw_path)
         if results is None:
             continue
 
         # resize gt to match processed size if needed
         h, w = list(results.values())[0][0].shape
-        gt_mask = cv2.resize(gt_mask, (w, h))
+        if (gt_mask.shape[0], gt_mask.shape[1]) != (h, w):
+            gt_mask = np.array(gt_pil.resize((w, h), Image.Resampling.NEAREST))
+
 
         row_meta = {"image_id": image_id, "lighting_detected": lighting}
         if dataset_log is not None and image_id in dataset_log.index:

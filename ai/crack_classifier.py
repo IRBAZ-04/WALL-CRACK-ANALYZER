@@ -13,8 +13,8 @@ Requirements:
 """
 
 import os
-import cv2
 import numpy as np
+from PIL import Image
 from typing import Optional, Union, Dict, Any
 
 # Suppress verbose TensorFlow warnings
@@ -60,16 +60,14 @@ class CrackClassifier:
             try:
                 import keras
                 self.model = keras.models.load_model(self.model_path, compile=False)
-                CrackClassifier._preprocess_fn = keras.applications.mobilenet_v2.preprocess_input
-            except Exception:
+            except (Exception, OSError, BaseException):
                 import tensorflow as tf
                 self.model = tf.keras.models.load_model(self.model_path, compile=False)
-                CrackClassifier._preprocess_fn = tf.keras.applications.mobilenet_v2.preprocess_input
 
             CrackClassifier._model = self.model
             CrackClassifier._model_path = self.model_path
             self.error = None
-        except Exception as exc:
+        except (Exception, OSError, BaseException) as exc:
             self.model = None
             self.error = f"Failed to load AI model: {str(exc)}"
 
@@ -81,56 +79,42 @@ class CrackClassifier:
         """
         Prepares the image for MobileNetV2 inference:
           1. Reads image if path provided.
-          2. Converts OpenCV BGR to RGB.
-          3. Resizes to 224 x 224.
-          4. Applies tf.keras.applications.mobilenet_v2.preprocess_input
-             (expects float input in [0, 255], scales to [-1, 1], do not divide by 255 beforehand).
+          2. Ensures RGB color ordering.
+          3. Resizes to 224 x 224 using training coordinate scaling.
+          4. Scales pixels to [-1, 1] using standard MobileNetV2 formulation (x / 127.5 - 1.0).
         """
         if isinstance(image_input, str):
             if not os.path.exists(image_input):
                 raise FileNotFoundError(f"Image not found at path: {image_input}")
-            bgr_img = cv2.imread(image_input)
-            if bgr_img is None:
-                raise ValueError(f"Could not decode image file: {image_input}")
+            try:
+                pil_img = Image.open(image_input).convert("RGB")
+            except Exception as e:
+                raise ValueError(f"Could not decode image file: {image_input}") from e
         elif isinstance(image_input, np.ndarray):
-            bgr_img = image_input
+            if image_input.size == 0:
+                raise ValueError("Input image array is empty.")
+            # Assume RGB uint8 array
+            pil_img = Image.fromarray(image_input.astype(np.uint8)).convert("RGB")
         else:
             raise TypeError(f"Unsupported image input type: {type(image_input)}")
 
-        if bgr_img.size == 0:
-            raise ValueError("Input image array is empty.")
+        raw_array = np.array(pil_img, dtype=np.float32)
 
-        # Ensure 3-channel RGB (input must remain RGB for AI inference)
-        if len(bgr_img.shape) == 2:
-            rgb_img = cv2.cvtColor(bgr_img, cv2.COLOR_GRAY2RGB)
-        elif len(bgr_img.shape) == 3:
-            if bgr_img.shape[2] == 4:
-                rgb_img = cv2.cvtColor(bgr_img, cv2.COLOR_BGRA2RGB)
-            elif bgr_img.shape[2] == 3:
-                rgb_img = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2RGB)
-            else:
-                raise ValueError(f"Unexpected number of channels: {bgr_img.shape[2]}")
-        else:
-            raise ValueError(f"Unexpected image shape: {bgr_img.shape}")
+        # Batch dimension: (1, H, W, 3)
+        batched = np.expand_dims(raw_array, axis=0)
 
-        # Resize to 224 x 224
-        resized_rgb = cv2.resize(rgb_img, self.target_size, interpolation=cv2.INTER_LINEAR)
-        img_array = resized_rgb.astype(np.float32)
+        # Resize to (224, 224) using exact TensorFlow coordinate logic if available, else PIL
+        try:
+            import tensorflow as tf
+            resized = tf.image.resize(batched, self.target_size).numpy()
+        except (Exception, OSError, BaseException):
+            resized_pil = pil_img.resize(self.target_size, Image.Resampling.BILINEAR)
+            resized = np.expand_dims(np.array(resized_pil, dtype=np.float32), axis=0)
 
-        # Batch dimension: (1, 224, 224, 3)
-        batched = np.expand_dims(img_array, axis=0)
-
-        # Apply MobileNetV2 preprocessing
-        if CrackClassifier._preprocess_fn is not None:
-            preprocessed = CrackClassifier._preprocess_fn(batched)
-        else:
-            try:
-                import keras
-                preprocessed = keras.applications.mobilenet_v2.preprocess_input(batched)
-            except Exception:
-                import tensorflow as tf
-                preprocessed = tf.keras.applications.mobilenet_v2.preprocess_input(batched)
+        # Standard MobileNetV2 mathematical scaling: map [0, 255] to [-1.0, 1.0]
+        preprocessed = (resized.astype(np.float32) / 127.5) - 1.0
         return preprocessed
+
 
     def predict(self, image_input: Union[str, np.ndarray]) -> Dict[str, Any]:
         """
